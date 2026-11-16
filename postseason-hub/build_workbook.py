@@ -112,7 +112,8 @@ SCORING = [
     # key, label, value, note
     ("pass_yd", "Passing yard", 0.04, "1 point per 25 passing yards"),
     ("pass_td", "Passing TD", 6, "League rule: 6-pt passing TDs"),
-    ("int", "Interception thrown", -2, "Assumed standard"),
+    ("int", "Interception thrown", -4, "League rule"),
+    ("pick6", "Pick-6 thrown (extra, on top of the INT)", -2, "League rule: a pick-6 costs -4 + -2 = -6"),
     ("rush_yd", "Rushing yard", 0.1, "1 point per 10 rushing yards"),
     ("rush_td", "Rushing TD", 6, ""),
     ("rec", "Reception", 0.5, "League rule: half PPR"),
@@ -123,9 +124,8 @@ SCORING = [
     ("two_pt", "2-pt conversion (pass, rush or catch)", 2, "Assumed standard"),
     ("xp", "Extra point made", 1, "Assumed standard"),
     ("xp_miss", "Extra point missed", -1, "Assumed standard"),
-    ("fg039", "FG made 0-39 yds", 3, "Assumed standard"),
-    ("fg4049", "FG made 40-49 yds", 4, "Assumed standard"),
-    ("fg50", "FG made 50+ yds", 5, "Assumed standard"),
+    ("fg_made", "FG made (base points per FG)", 0, "Set to 3 if you want 3 + distance bonus instead"),
+    ("fg_yd", "FG made: per yard of distance", 0.1, "League rule: a 45-yd FG = 4.5 pts"),
     ("fg_miss", "FG missed", -1, "Assumed standard"),
 ]
 SCORE_START = 5
@@ -140,6 +140,7 @@ ROUND_FIRST = ROUNDS_HDR + 1
 ROUND_LAST = ROUND_FIRST + N_ROUNDS - 1
 CUTS_RANGE = f"Settings!$C${ROUND_FIRST}:$C${ROUND_LAST}"
 RNAME_RANGE = f"Settings!$B${ROUND_FIRST}:$B${ROUND_LAST}"
+ROSTER_MAX = f"Settings!$B${ROUND_LAST + 3 + 8}"     # "Total / draft rounds" row in the Roster table
 
 ROUNDS = [
     (1, "Wild Card", 3, 1),
@@ -150,12 +151,12 @@ ROUNDS = [
 
 STAT_COLS = [
     # header, scoring key
-    ("Pass Yds", "pass_yd"), ("Pass TD", "pass_td"), ("INT", "int"),
+    ("Pass Yds", "pass_yd"), ("Pass TD", "pass_td"), ("INT", "int"), ("Pick 6", "pick6"),
     ("Rush Yds", "rush_yd"), ("Rush TD", "rush_td"),
     ("Rec", "rec"), ("Rec Yds", "rec_yd"), ("Rec TD", "rec_td"),
     ("Fum Lost", "fum"), ("2-Pt", "two_pt"),
     ("XP Made", "xp"), ("XP Miss", "xp_miss"),
-    ("FG 0-39", "fg039"), ("FG 40-49", "fg4049"), ("FG 50+", "fg50"), ("FG Miss", "fg_miss"),
+    ("FG Made", "fg_made"), ("FG Yds", "fg_yd"), ("FG Miss", "fg_miss"),
 ]
 STAT_FIRST_COL = 5   # E
 PTS_COL = col(STAT_FIRST_COL + len(STAT_COLS))       # U
@@ -398,25 +399,39 @@ def build(path, demo=False):
     ws.conditional_formatting.add(f"B5:{last_c}{4 + ROSTER_SLOTS}",
                                   FormulaRule(formula=['RIGHT(B5,1)="✖"'], font=Font(name=FONT, color="A6A6A6", strike=True)))
     ws.conditional_formatting.add(f"B3:{last_c}4", FormulaRule(formula=['LEFT(B$4,3)="Out"'], fill=GREY_FILL))
+    ws.conditional_formatting.add(f"B{cnt_r}:{last_c}{cnt_r}",
+                                  FormulaRule(formula=[f'N(B{cnt_r})>$A${cnt_r + 3}'], fill=RED_FILL))
+    ws[f"A{cnt_r + 3}"] = f"={ROSTER_MAX}"     # same-sheet copy for the conditional format
+    ws[f"A{cnt_r + 3}"].font = Font(name=FONT, size=8, color="FFFFFF")
+    ws.cell(row=cnt_r + 2, column=1, value="Red count = over the roster limit on Settings: log a Drop on Transactions.").font = F_SUB
     widths(ws, {"A": 18, **{col(2 + i): 30 for i in range(N_MGR)}})
     ws.freeze_panes = "B5"
 
     # ------------------------------------------------------------ Transactions
     ws = ws_tx
-    header(ws, 1, ["After Round", "Type", "Player", "Manager", "Notes", "Player Status Now"])
+    header(ws, 1, ["After Round", "Type", "Player", "Manager", "Notes", "Player Status Now", "Check"])
     for r in range(2, T_LAST + 1):
         ws[f"F{r}"] = f'=IF(C{r}="","",IFERROR(INDEX(Players!$I$2:$I${P_LAST},MATCH(C{r},{PL},0)),"Not in Players tab"))'
-    style_range(ws, f"A2:F{T_LAST}", font=F_BASE, border=False)
+        last_row_for_player = f'SUMPRODUCT(MAX(($C$2:$C${T_LAST}=C{r})*ROW($C$2:$C${T_LAST})))'
+        ws[f"G{r}"] = (f'=IF(AND(B{r}="",C{r}=""),"",IF(OR(B{r}="",C{r}="",D{r}=""),"Fill in Type, Player and Manager",'
+                       f'IF(F{r}="Not in Players tab","Add the player to the Players tab first",'
+                       f'IF(COUNTIF({MGR_NAMES},D{r})=0,"Unknown manager",'
+                       f'IF(AND(B{r}="Add",IFERROR(INDEX({MGR_STAT},MATCH(D{r},{MGR_NAMES},0)),"")<>"Alive"),"Manager is eliminated",'
+                       f'IF({last_row_for_player}>ROW(),"OK (a later row overrides this one)",'
+                       f'IF(AND(B{r}="Add",F{r}="NFL Out"),"OK, but NFL team is eliminated","OK")))))))')
+    style_range(ws, f"A2:G{T_LAST}", font=F_BASE, border=False)
     style_range(ws, f"A2:E{T_LAST}", font=F_INPUT, fill=FILL_INPUT, border=False)
-    style_range(ws, f"F2:F{T_LAST}", fill=FILL_CALC, border=False)
+    style_range(ws, f"F2:G{T_LAST}", fill=FILL_CALC, border=False)
+    ws.conditional_formatting.add(f"G2:G{T_LAST}", FormulaRule(formula=['AND($G2<>"",LEFT($G2,2)<>"OK")'], fill=RED_FILL))
     add_list_validation(ws, f"A2:A{T_LAST}", '"1,2,3"')
     add_list_validation(ws, f"B2:B{T_LAST}", '"Add,Drop"')
     add_list_validation(ws, f"C2:C{T_LAST}", f"={PL}")
     add_list_validation(ws, f"D2:D{T_LAST}", f"={MGR_NAMES}")
     ws["B1"].comment = Comment("Add = waiver claim (player joins that manager). Drop = manager releases player to the pool. "
                                "Players of eliminated managers return to the pool automatically, no Drop needed. "
+                               "Adding a player who is on another team moves him (works for trades too). "
                                "Log rows in the order they happen: the newest row for a player wins.", "Commissioner")
-    widths(ws, {"A": 12, "B": 8, "C": 26, "D": 20, "E": 40, "F": 18})
+    widths(ws, {"A": 12, "B": 8, "C": 26, "D": 20, "E": 30, "F": 18, "G": 34})
     ws.freeze_panes = "A2"
 
     # ------------------------------------------------------------ Waiver Wire
@@ -659,6 +674,9 @@ def build(path, demo=False):
     ws["K5"] = "Safe spots"
     ws["K6"] = f"={safe_n}"
     ws["K5"].font = F_SUB
+    ws["K7"] = "Cuts"            # same-sheet copy: Google Sheets conditional formats can't read other tabs
+    ws["K8"] = f"={cuts}"
+    ws["K7"].font = F_SUB
     SAFE = "$K$6"
     SBA = lambda c_: f"Scoreboard!${c_}${SB_FIRST}:${c_}${SB_END}"
     for i in range(1, LV_ROWS + 1):
@@ -682,7 +700,7 @@ def build(path, demo=False):
         ws.row_dimensions[r].height = 24
     ws.column_dimensions["J"].hidden = True
     ws.conditional_formatting.add(f"A{LV_FIRST}:I{LV_END}", FormulaRule(
-        formula=[f'AND($J{LV_FIRST}=0,{cuts}>0)'], fill=PatternFill("solid", fgColor="C00000"),
+        formula=[f'AND($J{LV_FIRST}=0,$K$8>0)'], fill=PatternFill("solid", fgColor="C00000"),
         font=Font(name=FONT, bold=True, color="FFFFFF"), stopIfTrue=True))
     ws.conditional_formatting.add(f"A{LV_FIRST}:I{LV_END}", FormulaRule(
         formula=[f'$H{LV_FIRST}="CUT"'], fill=RED_FILL, stopIfTrue=True))
@@ -695,11 +713,12 @@ def build(path, demo=False):
                   "Margin = points ahead of the cut line (safe) or behind it (cut). "
                   "Share this tab with File > Share > Publish to web.").font = F_SUB
     widths(ws, {"A": 12, "B": 22, "C": 24, "D": 13, "E": 11, "F": 12, "G": 13, "H": 10, "I": 11, "K": 10})
+    ws.column_dimensions["K"].hidden = True
     ws.freeze_panes = "A6"
 
     # ------------------------------------------------------------ Start Here
     ws = start
-    title(ws, "NFL Postseason Survivor League", "12 teams · half PPR · 6-pt passing TDs · TE premium · managers cut each round")
+    title(ws, "NFL Postseason Survivor League", "12 teams · half PPR · 6-pt passing TDs · TE premium · INT -4 (pick-6 -6) · FG 0.1/yd · managers cut each round")
     lines = [
         ("HOW IT WORKS", None),
         ("", "Draft only players on the 14 NFL playoff teams. After each playoff round the lowest-scoring managers are "
@@ -728,8 +747,13 @@ def build(path, demo=False):
         ("9.", "NFL Teams: enter the round each losing team was eliminated in."),
         ("10.", "Scoreboard: managers marked CUT are below the line. Make it official by typing the round on "
                 "the Managers tab (Eliminated After Round). Their players drop to the Waiver Wire automatically."),
-        ("11.", "Run waivers by hand in Waiver Priority order (worst survivor first). Log every claim on Transactions "
-                "as 'Add' (and any releases as 'Drop'). Rosters update automatically."),
+        ("11.", "Waiver draft (offline): run it in Waiver Priority order from the Scoreboard (worst survivor first). "
+                "For each pick, add a row on Transactions: Type = Add, the player, the manager. To release a player, "
+                "Type = Drop. Rosters, the Waiver Wire and lineup checks update right away. The Check column flags "
+                "mistakes, and a red roster count on Rosters means someone is over the limit and needs a Drop."),
+        ("", "Manual moves: an Add always puts the player on that manager's team, even if another team had him, "
+             "so you can also use it to fix mistakes or record trades. The newest row for a player wins, so to undo "
+             "a move just delete the row. Players not on the Players tab must be added there first."),
         ("SHARING", None),
         ("", "In Google Sheets: Share > anyone with the link > Viewer. Use Data > Protect sheets and ranges if you "
              "give managers edit access to their own lineup cells."),
@@ -738,7 +762,8 @@ def build(path, demo=False):
         ("EXAMPLE ROWS", None),
         ("Players", "Patrick Mahomes | QB | KC"),
         ("NFL Teams", "KC | Kansas City Chiefs | AFC | 1 | (blank until they lose, then 2 if they lose in the Divisional round)"),
-        ("Stats", "1 | Josh Allen | (auto) | (auto) | 265 | 2 | 1 | 41 | 1 | 0 | ... → 26.70 pts with this league's scoring"),
+        ("Stats", "1 | Josh Allen | (auto) | (auto) | 265 pass yds | 2 pass TD | 1 INT | 0 pick-6 | 41 rush yds | 1 rush TD → 28.70 pts. "
+                  "Kicker: FG Made 2, FG Yds 87 (a 42 and a 45) → 8.7 pts from field goals."),
         ("Transactions", "1 | Add | Josh Allen | Manager 4 | waiver claim #1"),
         ("TIEBREAKS", None),
         ("", "Cumulative basis: ties broken by current-round points. Weekly basis: ties broken by cumulative points."),
@@ -806,21 +831,24 @@ def fill_demo(wb, S, total_col):
                 continue   # byes
             if rd == 2 and ti in (3, 4, 5, 10, 11, 12):
                 continue
-            vals = [0] * 16
+            v = {}
             if pos == "QB":
-                vals[0], vals[1], vals[2] = random.randint(150, 350), random.randint(0, 4), random.randint(0, 2)
-                vals[3] = random.randint(0, 40)
+                v["pass_yd"], v["pass_td"] = random.randint(150, 350), random.randint(0, 4)
+                v["int"] = random.randint(0, 2)
+                v["pick6"] = 1 if v["int"] and random.random() < 0.3 else 0
+                v["rush_yd"] = random.randint(0, 40)
             elif pos in ("RB", "WR", "TE"):
-                vals[3] = random.randint(0, 90) if pos == "RB" else 0
-                vals[4] = random.randint(0, 1) if pos == "RB" else 0
-                vals[5] = random.randint(0, 8)
-                vals[6] = random.randint(0, 110)
-                vals[7] = random.randint(0, 1)
-                vals[8] = 1 if random.random() < 0.05 else 0
+                if pos == "RB":
+                    v["rush_yd"], v["rush_td"] = random.randint(0, 90), random.randint(0, 1)
+                v["rec"], v["rec_yd"], v["rec_td"] = random.randint(0, 8), random.randint(0, 110), random.randint(0, 1)
+                v["fum"] = 1 if random.random() < 0.05 else 0
+                v["two_pt"] = 1 if random.random() < 0.05 else 0
             else:
-                vals[10], vals[11] = random.randint(1, 4), random.randint(0, 1)
-                vals[12], vals[13], vals[14], vals[15] = (random.randint(0, 2), random.randint(0, 1),
-                                                          random.randint(0, 1), random.randint(0, 1))
+                v["xp"], v["xp_miss"] = random.randint(1, 4), random.randint(0, 1)
+                made = random.randint(0, 3)
+                v["fg_made"], v["fg_yd"] = made, sum(random.randint(20, 58) for _ in range(made))
+                v["fg_miss"] = random.randint(0, 1)
+            vals = [v.get(k, 0) for _, k in STAT_COLS]
             ws.cell(row=r, column=1, value=rd)
             ws.cell(row=r, column=2, value=name)
             for j, v in enumerate(vals):

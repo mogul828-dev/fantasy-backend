@@ -9,8 +9,8 @@
  *   - Re-import a past round   : for stat corrections.
  *
  * Source: ESPN's public site API (free, no key, unofficial). Checked against Sleeper's stats for all
- * 13 games of the 2025-26 playoffs: every stat matched for all 308 players, including field-goal
- * distances and two-point conversions.
+ * 13 games of the 2025-26 playoffs: every stat matched for all 281 players with stats, including
+ * field-goal yards, two-point conversions and all 3 pick-sixes.
  *
  * Install: Extensions > Apps Script, paste this file, save, reload the spreadsheet.
  */
@@ -18,8 +18,8 @@
 var ESPN = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl';
 var POSITIONS = { QB: 'QB', RB: 'RB', FB: 'RB', WR: 'WR', TE: 'TE', K: 'K', PK: 'K' };
 // Stats tab columns E..T, in order (must match the workbook).
-var STAT_FIELDS = ['passYds', 'passTd', 'int', 'rushYds', 'rushTd', 'rec', 'recYds', 'recTd',
-                   'fumLost', 'twoPt', 'xpMade', 'xpMiss', 'fg039', 'fg4049', 'fg50', 'fgMiss'];
+var STAT_FIELDS = ['passYds', 'passTd', 'int', 'pick6', 'rushYds', 'rushTd', 'rec', 'recYds', 'recTd',
+                   'fumLost', 'twoPt', 'xpMade', 'xpMiss', 'fgMade', 'fgYds', 'fgMiss'];
 var PLAYER_LAST = 601, STATS_LAST = 1001;
 var SOURCE_COL = 23;   // Stats!W: "ESPN" on rows this script owns; manual rows are left alone.
 
@@ -293,8 +293,8 @@ function stat_(group, row, key, label) {
 
 /**
  * ESPN game summary JSON -> { players: {key: stats}, notes: [string] }  (key = ESPN id or name).
- * Field-goal distances and two-point conversions come from the scoring-play text;
- * everything else from the box score.
+ * Field-goal distances and two-point conversions come from the scoring-play text, pick-6 passers
+ * from the play-by-play; everything else from the box score.
  */
 function parseSummary(json) {
   var players = {}, byName = {}, notes = [], kickers = {};
@@ -336,6 +336,7 @@ function parseSummary(json) {
             p = P(a.displayName, a.id);
             var fg = madeAtt_(stat_(g, row, 'fieldGoalsMade/fieldGoalAttempts', 'FG'));
             var xp = madeAtt_(stat_(g, row, 'extraPointsMade/extraPointAttempts', 'XP'));
+            p.fgMade += fg[0];
             p.fgMiss += fg[1] - fg[0];
             p.xpMade += xp[0];
             p.xpMiss += xp[1] - xp[0];
@@ -351,8 +352,8 @@ function parseSummary(json) {
     var type = String((sp.type && sp.type.text) || '');
     var fg = text.match(/^(.*?)\s+(\d+)\s*(?:Yd|Yard|Yds)s?\.?\s+(?:Field Goal|FG)/i);
     if (fg && kickers[fg[1].trim()]) {
-      var k = fg[1].trim(), d = parseInt(fg[2], 10), p = byName[k];
-      if (d >= 50) p.fg50++; else if (d >= 40) p.fg4049++; else p.fg039++;
+      var k = fg[1].trim();
+      byName[k].fgYds += parseInt(fg[2], 10);
       kickers[k].found++;
     } else if (/field goal/i.test(type) && !/miss|block/i.test(type)) {
       notes.push('Field goal not matched to a kicker: "' + text + '"');
@@ -370,14 +371,40 @@ function parseSummary(json) {
   Object.keys(kickers).forEach(function (k) {
     var gap = kickers[k].made - kickers[k].found;
     if (gap > 0) {
-      byName[k].fg039 += gap;
-      notes.push(k + ': ' + gap + ' made FG(s) had no distance yet, counted as 0-39 yds for now.');
+      notes.push(k + ': ' + gap + ' made FG(s) have no distance yet (ESPN usually fills it in within minutes). ' +
+                 'If it stays, add the yards by hand on the Stats tab.');
     } else if (gap < 0) {
       notes.push(k + ': more FG scoring plays than FGs in the box score, please check.');
     }
   });
 
+  // Pick-sixes: "A.Rodgers pass deep right intended for P.Freiermuth INTERCEPTED by C.Bullock ... TOUCHDOWN."
+  var passers = Object.keys(byName).filter(function (nm) { return byName[nm].int > 0; });
+  var drives = (json.drives && json.drives.previous) || [];
+  if (json.drives && json.drives.current) drives = drives.concat([json.drives.current]);
+  var seen = {};
+  drives.forEach(function (dr) {
+    (dr.plays || []).forEach(function (pl) {
+      var t = String((pl.type && pl.type.text) || '');
+      var txt = String(pl.text || '');
+      if (seen[pl.id] || !/interception return touchdown/i.test(t) || /no play|nullified|reversed/i.test(txt)) return;
+      seen[pl.id] = true;
+      var m = txt.match(/([A-Z][A-Za-z'\-]*\.\s?[A-Za-z'\-. ]+?)\s+pass\b/);
+      var hit = m ? passers.filter(function (nm) { return abbrevName(nm) === abbrevName(m[1]); }) : [];
+      if (hit.length === 1) byName[hit[0]].pick6++;
+      else if (passers.length === 1) byName[passers[0]].pick6++;
+      else notes.push('Pick-6 not matched to a QB, add it by hand: "' + txt.slice(0, 140) + '"');
+    });
+  });
+
   return { players: players, notes: notes };
+}
+
+/** "Aaron Rodgers" and "A.Rodgers" -> "arodgers" (first initial + last name, suffixes dropped). */
+function abbrevName(s) {
+  var parts = String(s).replace(/\b(Jr|Sr|II|III|IV|V)\.?$/i, '').trim().split(/[\s.]+/).filter(String);
+  if (!parts.length) return '';
+  return (parts[0][0] + parts[parts.length - 1]).toLowerCase().replace(/[^a-z]/g, '');
 }
 
 // Lets the pure functions be unit-tested in Node; ignored by Apps Script.
