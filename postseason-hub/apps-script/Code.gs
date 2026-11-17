@@ -94,7 +94,7 @@ function refreshRound_(round, force) {
   }
 
   var started = games.filter(function (g) { return g.state !== 'pre'; }).length;
-  var stats = started ? fetchJson_(SLEEPER + '/stats/nfl/post/' + season + '/' + week) : {};
+  var stats = started ? fetchJson_(SLEEPER + '/v1/stats/nfl/post/' + season + '/' + week) : {};
   var res = writeStats_(ss, round, statsFromSleeper(stats || {}));
   var notes = res.missingId.map(function (n) {
     return ['', n + ' has no Sleeper ID on the Players tab, so he can\'t be scored. Run Playoff Hub > Load player pool.'];
