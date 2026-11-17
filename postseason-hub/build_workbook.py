@@ -26,6 +26,18 @@ P_LAST = PLAYER_ROWS + 1
 S_LAST = STAT_ROWS + 1
 T_LAST = TXN_ROWS + 1
 D_LAST = DRAFT_ROUNDS * N_MGR + 1
+# Draft Board grid: one column per draft slot (B..M), two rows per round (player name, then "1.03 · RB · SF").
+DG_FIRST_ROW = 6
+DG_LAST_ROW = DG_FIRST_ROW + 2 * DRAFT_ROUNDS - 1
+DG_RANGE = f"$B${DG_FIRST_ROW}:${chr(ord('A') + N_MGR)}${DG_LAST_ROW}"
+
+
+def draft_cell(pick):
+    """(row, column) of the player-name cell for overall pick number `pick` (1-based)."""
+    rd = (pick - 1) // N_MGR + 1
+    pir = (pick - 1) % N_MGR + 1
+    slot = pir if rd % 2 == 1 else N_MGR + 1 - pir
+    return DG_FIRST_ROW + 2 * (rd - 1), 1 + slot
 M_LAST = N_MGR + 1
 
 FONT = "Arial"
@@ -97,7 +109,8 @@ def add_list_validation(ws, rng, formula, prompt=None):
         dv.prompt = prompt
         dv.showInputMessage = True
     ws.add_data_validation(dv)
-    dv.add(rng)
+    for part in rng.split():          # space-separated list of ranges allowed
+        dv.add(part)
 
 
 def col(n):
@@ -306,8 +319,8 @@ def build(path, demo=False):
     for r in range(2, P_LAST + 1):
         ws[f"D{r}"] = (f'=IF(OR($A{r}="",$C{r}=""),"",IFERROR(IF(INDEX({TEAM_ELIM},MATCH($C{r},{TEAM_ABBR},0))="",'
                        f'"Alive","Out"),"Not in playoffs"))')
-        ws[f"E{r}"] = (f"=IF($A{r}=\"\",\"\",IFERROR(INDEX('Draft Board'!$E$2:$E${D_LAST},"
-                       f"MATCH($A{r},'Draft Board'!$F$2:$F${D_LAST},0)),\"\"))")
+        dslot = f"SUMPRODUCT(MAX(('Draft Board'!{DG_RANGE}=$A{r})*(COLUMN('Draft Board'!{DG_RANGE})-1)))"
+        ws[f"E{r}"] = (f"=IF($A{r}=\"\",\"\",IF({dslot}=0,\"\",INDEX('Draft Board'!$B$4:${col(1 + N_MGR)}$4,{dslot})))")
         ws[f"F{r}"] = (f'=IF($A{r}="","",SUMPRODUCT(MAX((Transactions!$C$2:$C${T_LAST}=$A{r})'
                        f'*ROW(Transactions!$C$2:$C${T_LAST}))))')
         ws[f"G{r}"] = (f'=IF($A{r}="","",IF(F{r}=0,E{r},IF(INDEX(Transactions!$B:$B,F{r})="Add",'
@@ -342,31 +355,92 @@ def build(path, demo=False):
     ws.freeze_panes = "B2"
     ws.auto_filter.ref = f"A1:N{P_LAST}"
 
-    # ------------------------------------------------------------ Draft Board
+    # ------------------------------------------------------------ Draft Board (Sleeper-style snake grid)
     ws = ws_dr
-    header(ws, 1, ["Pick", "Round", "Pick in Round", "Draft Slot", "Manager", "Player", "Pos", "NFL Team", "Check"])
-    for p in range(1, DRAFT_ROUNDS * N_MGR + 1):
-        r = p + 1
-        rd = (p - 1) // N_MGR + 1
-        pir = (p - 1) % N_MGR + 1
-        slot = pir if rd % 2 == 1 else N_MGR + 1 - pir
-        ws.cell(row=r, column=1, value=p)
-        ws.cell(row=r, column=2, value=rd)
-        ws.cell(row=r, column=3, value=pir)
-        ws.cell(row=r, column=4, value=slot)
-        ws[f"E{r}"] = f'=IFERROR(INDEX({MGR_NAMES},MATCH(D{r},{MGR_SLOT},0)),"")'
-        ws[f"G{r}"] = f'=IF(F{r}="","",{ppos(f"F{r}")})'
-        ws[f"H{r}"] = f'=IF(F{r}="","",IFERROR(INDEX(Players!$C$2:$C${P_LAST},MATCH(F{r},{PL},0)),"?"))'
-        ws[f"I{r}"] = (f'=IF(F{r}="","",IF(COUNTIF($F$2:$F${D_LAST},F{r})>1,"DUPLICATE",'
-                       f'IF(G{r}="?","Not in Players tab","OK")))')
-    style_range(ws, f"A2:I{D_LAST}", font=F_BASE, align=CENTER)
-    style_range(ws, f"F2:F{D_LAST}", font=F_INPUT, fill=FILL_INPUT, align=Alignment(horizontal="left"))
-    style_range(ws, f"E2:E{D_LAST}", align=Alignment(horizontal="left"))
-    add_list_validation(ws, f"F2:F{D_LAST}", f"={PL}", "Pick a player (type to search)")
-    ws.conditional_formatting.add(f"A2:I{D_LAST}", FormulaRule(formula=['MOD($B2,2)=0'], fill=FILL_CALC))
-    ws.conditional_formatting.add(f"I2:I{D_LAST}", FormulaRule(formula=['AND($I2<>"",$I2<>"OK")'], fill=RED_FILL))
-    widths(ws, {"A": 7, "B": 8, "C": 9, "D": 9, "E": 20, "F": 26, "G": 7, "H": 10, "I": 18})
-    ws.freeze_panes = "A2"
+    last_col = col(1 + N_MGR)
+    name_rows = [DG_FIRST_ROW + 2 * i for i in range(DRAFT_ROUNDS)]
+    ws["A1"] = "DRAFT BOARD"
+    ws["A1"].font = Font(name=FONT, size=18, bold=True, color="1F3864")
+    # P1 = picks made, P2 = next pick number (same-sheet helpers for the "on the clock" highlight)
+    ws["P1"] = (f"=SUMPRODUCT((MOD(ROW({DG_RANGE})-{DG_FIRST_ROW},2)=0)*({DG_RANGE}<>\"\"))")
+    ws["P2"] = "=P1+1"
+    nxt = "$P$2"
+    nr = f"INT(({nxt}-1)/{N_MGR})+1"
+    npir = f"(MOD({nxt}-1,{N_MGR})+1)"
+    nslot = f"IF(MOD({nr},2)=1,{npir},{N_MGR + 1}-{npir})"
+    ws["A2"] = (f'=IF({nxt}>{DRAFT_ROUNDS * N_MGR},"Draft complete!",'
+                f'"ON THE CLOCK:  "&{nr}&"."&TEXT({npir},"00")&"  ·  "&INDEX($B$4:${last_col}$4,{nslot}))')
+    ws["A2"].font = Font(name=FONT, size=13, bold=True, color="C00000")
+    ws["G2"] = "QB"; ws["H2"] = "RB"; ws["I2"] = "WR"; ws["J2"] = "TE"; ws["K2"] = "K"
+    POS_FILL = {"QB": "F9C5D5", "RB": "BFEBDC", "WR": "C6E3FA", "TE": "FCDDB8", "K": "DCCFF7"}
+    for c_, pos in zip("GHIJK", ["QB", "RB", "WR", "TE", "K"]):
+        ws[f"{c_}2"].fill = PatternFill("solid", fgColor=POS_FILL[pos])
+        ws[f"{c_}2"].font = F_BOLD
+        ws[f"{c_}2"].alignment = CENTER
+    ws["A4"] = "Rd"
+    ws["A5"] = ""
+    for c in range(1, N_MGR + 1):
+        L = col(1 + c)
+        ws[f"{L}4"] = f'=IFERROR(INDEX({MGR_NAMES},MATCH({c},{MGR_SLOT},0)),"Slot {c}")'
+        ws[f"{L}5"] = f'=IFERROR(INDEX(Managers!$C$4:$C${3 + N_MGR},MATCH({c},{MGR_SLOT},0))&"","")'
+    style_range(ws, f"A4:{last_col}4", font=F_HDR, fill=FILL_HDR, align=CENTER)
+    style_range(ws, f"A5:{last_col}5", font=Font(name=FONT, size=8, italic=True, color="595959"),
+                fill=FILL_SEC, align=CENTER)
+    for rd, nrow in enumerate(name_rows, start=1):
+        irow = nrow + 1
+        ws[f"A{nrow}"] = rd
+        ws[f"A{irow}"] = "→" if rd % 2 == 1 else "←"
+        for c in range(1, N_MGR + 1):
+            L = col(1 + c)
+            pir = c if rd % 2 == 1 else N_MGR + 1 - c
+            label = f"{rd}.{pir:02d}"
+            nm = f"{L}{nrow}"
+            ws[f"{L}{irow}"] = (f'=IF({nm}="","{label}",IF(COUNTIF({DG_RANGE},{nm})>1,"{label}  DUPLICATE",'
+                                f'IFERROR("{label}  "&INDEX(Players!$B$2:$B${P_LAST},MATCH({nm},{PL},0))&" · "'
+                                f'&INDEX(Players!$C$2:$C${P_LAST},MATCH({nm},{PL},0)),"{label}  NOT IN PLAYERS TAB")))')
+        style_range(ws, f"B{nrow}:{last_col}{nrow}", font=Font(name=FONT, size=10, bold=True),
+                    align=Alignment(horizontal="center", vertical="bottom", wrap_text=True),
+                    border=False)
+        style_range(ws, f"B{irow}:{last_col}{irow}", font=Font(name=FONT, size=8, color="404040"),
+                    align=Alignment(horizontal="center", vertical="top"), border=False)
+        for c in range(2, 2 + N_MGR):
+            top = ws.cell(row=nrow, column=c)
+            bot = ws.cell(row=irow, column=c)
+            top.border = Border(left=THIN, right=THIN, top=Side(style="thin", color="808080"))
+            bot.border = Border(left=THIN, right=THIN, bottom=Side(style="thin", color="808080"))
+        for r_ in (nrow, irow):
+            ws.cell(row=r_, column=1).font = Font(name=FONT, size=11, bold=True, color="1F3864")
+            ws.cell(row=r_, column=1).alignment = CENTER
+            ws.cell(row=r_, column=1).fill = FILL_SEC
+        ws.row_dimensions[nrow].height = 30
+        ws.row_dimensions[irow].height = 15
+    add_list_validation(ws, ",".join(f"B{r_}:{last_col}{r_}" for r_ in name_rows).replace(",", " "),
+                        f"={PL}", "Pick a player (type to search)")
+    # Colors by position (rules read the info row, which is on this sheet: Google Sheets
+    # conditional formats can't look at other tabs).
+    grid = f"B{DG_FIRST_ROW}:{last_col}{DG_LAST_ROW}"
+    tl = f"B{DG_FIRST_ROW}"
+    is_name = f"MOD(ROW({tl})-{DG_FIRST_ROW},2)=0"
+    info_of = f"IF({is_name},B{DG_FIRST_ROW + 1},{tl})"         # info text for either row of a pick
+    ws.conditional_formatting.add(grid, FormulaRule(
+        formula=[f'ISNUMBER(SEARCH("  DUPLICATE",{info_of}))+ISNUMBER(SEARCH("NOT IN PLAYERS",{info_of}))'],
+        fill=PatternFill("solid", fgColor="FF5B5B"), font=Font(name=FONT, bold=True, color="FFFFFF"),
+        stopIfTrue=True))
+    for pos in ["QB", "RB", "WR", "TE", "K"]:
+        ws.conditional_formatting.add(grid, FormulaRule(
+            formula=[f'ISNUMBER(SEARCH("  {pos} · ",{info_of}))'],
+            fill=PatternFill("solid", fgColor=POS_FILL[pos]), stopIfTrue=True))
+    # On the clock: the empty pick whose number is P2
+    rd_expr = f"INT((ROW({tl})-{DG_FIRST_ROW})/2)+1"
+    pick_expr = f"({rd_expr}-1)*{N_MGR}+IF(MOD({rd_expr},2)=1,COLUMN({tl})-1,{N_MGR + 1}-(COLUMN({tl})-1))"
+    ws.conditional_formatting.add(grid, FormulaRule(
+        formula=[f'AND({pick_expr}=$P$2,IF({is_name},{tl},B{DG_FIRST_ROW - 1})="")'],
+        fill=PatternFill("solid", fgColor="FFE699"), stopIfTrue=True))
+    widths(ws, {"A": 6, **{col(1 + c): 17 for c in range(1, N_MGR + 1)}})
+    ws.column_dimensions["P"].hidden = True
+    ws.freeze_panes = "B6"
+    ws["A3"] = "Click an empty pick and choose the player from the dropdown (start typing to search)."
+    ws["A3"].font = F_SUB
 
     # ------------------------------------------------------------ Rosters
     ws = ws_ro
@@ -735,8 +809,9 @@ def build(path, demo=False):
         ("4.", "Players: list every draftable QB/RB/WR/TE/K on those teams (name, position, team abbreviation). "
                "Easiest: 'Playoff Hub > Load player pool' fills this from Sleeper (with Sleeper IDs), then delete anyone not worth drafting."),
         ("DRAFT", None),
-        ("5.", "Draft Board: pick each player from the dropdown. Snake order fills in from draft slots. "
-               "The Check column flags duplicates and typos."),
+        ("5.", "Draft Board: a Sleeper-style snake grid with one column per manager in draft-slot order. Click the "
+               "highlighted pick (on the clock), choose the player from the dropdown, and the cell colors by position "
+               "(QB pink, RB green, WR blue, TE orange, K purple). Duplicates and typos turn red."),
         ("EACH PLAYOFF ROUND", None),
         ("6.", "Settings: set Current round."),
         ("7.", "Lineups: enter each manager's 8 starters for that round. Check column flags wrong positions, "
@@ -820,7 +895,8 @@ def fill_demo(wb, S, total_col):
     random.shuffle(order)
     ws = wb["Draft Board"]
     for i in range(144):
-        ws.cell(row=2 + i, column=6, value=order[i][0])
+        r_, c_ = draft_cell(i + 1)
+        ws.cell(row=r_, column=c_, value=order[i][0])
     # stats rounds 1 & 2
     ws = wb["Stats"]
     r = 2
