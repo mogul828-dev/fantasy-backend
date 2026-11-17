@@ -146,7 +146,7 @@ ROUNDS = [
     (1, "Wild Card", 3, 1),
     (2, "Divisional", 3, 2),
     (3, "Conference Championships", 3, 3),
-    (4, "Super Bowl", 0, 5),
+    (4, "Super Bowl", 0, 4),
 ]
 
 STAT_COLS = [
@@ -225,7 +225,7 @@ def build(path, demo=False):
     add_list_validation(ws, f"B{LEAGUE_START + 1}", '"1,2,3,4"')
     add_list_validation(ws, f"B{LEAGUE_START + 2}", '"Cumulative,Weekly"')
 
-    header(ws, ROUNDS_HDR, ["Round #", "Round", "Managers cut after round", "ESPN postseason week"])
+    header(ws, ROUNDS_HDR, ["Round #", "Round", "Managers cut after round", "Data week (Sleeper)"])
     for i, (n, name, cuts, wk) in enumerate(ROUNDS):
         r = ROUND_FIRST + i
         for j, v in enumerate((n, name, cuts, wk)):
@@ -234,7 +234,7 @@ def build(path, demo=False):
     style_range(ws, f"C{ROUND_FIRST}:C{ROUND_LAST - 1}", font=F_INPUT, fill=FILL_INPUT, align=CENTER)
     ws.cell(row=ROUND_LAST + 1, column=1,
             value="Cuts are your call each week (2-4). The Scoreboard draws the cut line from these numbers. "
-                  "ESPN week 4 is the Pro Bowl, so the Super Bowl is week 5.").font = F_SUB
+                  "Data week is the playoff week number the live-stats script asks Sleeper for.").font = F_SUB
 
     rr = ROUND_LAST + 3
     header(ws, rr, ["Roster", "Slots", "Note"])
@@ -291,7 +291,7 @@ def build(path, demo=False):
     ws.conditional_formatting.add(f"F{T_FIRST}:F{T_END}",
                                   FormulaRule(formula=[f'LEFT(F{T_FIRST},3)="Out"'], fill=GREY_FILL))
     ws.cell(row=T_END + 2, column=1,
-            value="Abbreviations must match the NFL Team column on the Players tab (use ESPN's: KC, BUF, PHI, SF, ...). "
+            value="Abbreviations must match the NFL Team column on the Players tab (use Sleeper's: KC, BUF, PHI, SF, LAR, JAX, WAS, ...). "
                   "The 1 seeds have a Wild Card bye; their players score 0 in Round 1.").font = F_SUB
     widths(ws, {"A": 8, "B": 24, "C": 12, "D": 8, "E": 20, "F": 12})
     ws.freeze_panes = "A4"
@@ -301,7 +301,7 @@ def build(path, demo=False):
     # ------------------------------------------------------------ Players
     ws = ws_pl
     hdr = ["Player", "Pos", "NFL Team", "NFL Status", "Drafted By", "Last Txn Row",
-           "Owner (raw)", "Owner", "Status", "Roster Key", "Waiver Key", "Total Pts", "ESPN ID", "Game"]
+           "Owner (raw)", "Owner", "Status", "Roster Key", "Waiver Key", "Total Pts", "Sleeper ID", "Game"]
     header(ws, 1, hdr)
     for r in range(2, P_LAST + 1):
         ws[f"D{r}"] = (f'=IF(OR($A{r}="",$C{r}=""),"",IFERROR(IF(INDEX({TEAM_ELIM},MATCH($C{r},{TEAM_ABBR},0))="",'
@@ -334,8 +334,9 @@ def build(path, demo=False):
     ws["A1"].comment = Comment("Type players here (or load them with the Apps Script menu). "
                                "Names must be spelled the same everywhere they are used.", "Commissioner")
     widths(ws, {"A": 26, "B": 7, "C": 10, "D": 15, "E": 18, "H": 18, "I": 18, "L": 10, "M": 11, "N": 8})
-    ws["M1"].comment = Comment("Filled by 'Load player pool'. Lets live stats match players even if you "
-                               "change how a name is spelled. Optional.", "Commissioner")
+    ws["M1"].comment = Comment("Filled by 'Playoff Hub > Load player pool'. Live stats are matched by this ID, "
+                               "so a player without one can't be scored automatically. Running Load player pool "
+                               "again fills in IDs for players you typed in yourself.", "Commissioner")
     ws["N1"].comment = Comment("pre = game not started, in = playing now, post = final. Blank = no game "
                                "this round (bye or eliminated). From the Games tab.", "Commissioner")
     ws.freeze_panes = "B2"
@@ -481,7 +482,7 @@ def build(path, demo=False):
     last_stat = col(STAT_FIRST_COL + len(STAT_COLS) - 1)
     style_range(ws, f"A2:W{S_LAST}", font=F_BASE, border=False)
     style_range(ws, f"W2:W{S_LAST}", fill=FILL_CALC, border=False, align=CENTER)
-    ws["W1"].comment = Comment("ESPN = written by the live-scoring script (replaced on every refresh). "
+    ws["W1"].comment = Comment("Sleeper = written by the live-scoring script (replaced on every refresh). "
                                "Leave blank for your own rows, e.g. a stat correction: those are kept and "
                                "added on top.", "Commissioner")
     style_range(ws, f"A2:B{S_LAST}", font=F_INPUT, fill=FILL_INPUT, border=False)
@@ -732,7 +733,7 @@ def build(path, demo=False):
         ("2.", "Managers: enter the 12 names, team names and draft slots 1-12."),
         ("3.", "NFL Teams: enter the 14 playoff teams (abbreviation, name, conference, seed)."),
         ("4.", "Players: list every draftable QB/RB/WR/TE/K on those teams (name, position, team abbreviation). "
-               "Easiest: 'Playoff Hub > Load player pool' fills this from ESPN (with ESPN IDs), then delete anyone not worth drafting."),
+               "Easiest: 'Playoff Hub > Load player pool' fills this from Sleeper (with Sleeper IDs), then delete anyone not worth drafting."),
         ("DRAFT", None),
         ("5.", "Draft Board: pick each player from the dropdown. Snake order fills in from draft slots. "
                "The Check column flags duplicates and typos."),
@@ -741,7 +742,7 @@ def build(path, demo=False):
         ("7.", "Lineups: enter each manager's 8 starters for that round. Check column flags wrong positions, "
                "duplicates and players not on the roster."),
         ("8.", "Scoring is live: with the Apps Script installed, choose 'Playoff Hub > Turn ON auto-refresh'. "
-               "Every 5 minutes it pulls ESPN box scores for the current round into Stats and game clocks into Games. "
+               "Every 5 minutes it pulls Sleeper stats for the current round into Stats and game status into Games. "
                "The Live tab is the leaderboard with the cut line. Fix a stat by adding your own row on Stats "
                "(Source blank): it is added on top and never overwritten."),
         ("9.", "NFL Teams: enter the round each losing team was eliminated in."),
