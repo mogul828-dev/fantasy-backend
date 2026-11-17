@@ -30,6 +30,11 @@ D_LAST = DRAFT_ROUNDS * N_MGR + 1
 DG_FIRST_ROW = 6
 DG_LAST_ROW = DG_FIRST_ROW + 2 * DRAFT_ROUNDS - 1
 DG_RANGE = f"$B${DG_FIRST_ROW}:${chr(ord('A') + N_MGR)}${DG_LAST_ROW}"
+# Hidden names-only copy of the grid (one row per round). Formulas that scan the picks read this
+# block, never the grid itself: the grid's label cells would otherwise reference their own range,
+# which Google Sheets rejects as a circular reference (#REF!).
+DG_NAMES_FIRST = 40
+DG_NAMES = f"$B${DG_NAMES_FIRST}:${chr(ord('A') + N_MGR)}${DG_NAMES_FIRST + DRAFT_ROUNDS - 1}"
 
 
 def draft_cell(pick):
@@ -319,7 +324,7 @@ def build(path, demo=False):
     for r in range(2, P_LAST + 1):
         ws[f"D{r}"] = (f'=IF(OR($A{r}="",$C{r}=""),"",IFERROR(IF(INDEX({TEAM_ELIM},MATCH($C{r},{TEAM_ABBR},0))="",'
                        f'"Alive","Out"),"Not in playoffs"))')
-        dslot = f"SUMPRODUCT(MAX(('Draft Board'!{DG_RANGE}=$A{r})*(COLUMN('Draft Board'!{DG_RANGE})-1)))"
+        dslot = f"SUMPRODUCT(MAX(('Draft Board'!{DG_NAMES}=$A{r})*(COLUMN('Draft Board'!{DG_NAMES})-1)))"
         ws[f"E{r}"] = (f"=IF($A{r}=\"\",\"\",IF({dslot}=0,\"\",INDEX('Draft Board'!$B$4:${col(1 + N_MGR)}$4,{dslot})))")
         ws[f"F{r}"] = (f'=IF($A{r}="","",SUMPRODUCT(MAX((Transactions!$C$2:$C${T_LAST}=$A{r})'
                        f'*ROW(Transactions!$C$2:$C${T_LAST}))))')
@@ -362,7 +367,7 @@ def build(path, demo=False):
     ws["A1"] = "DRAFT BOARD"
     ws["A1"].font = Font(name=FONT, size=18, bold=True, color="1F3864")
     # P1 = picks made, P2 = next pick number (same-sheet helpers for the "on the clock" highlight)
-    ws["P1"] = (f"=SUMPRODUCT((MOD(ROW({DG_RANGE})-{DG_FIRST_ROW},2)=0)*({DG_RANGE}<>\"\"))")
+    ws["P1"] = f'=SUMPRODUCT(({DG_NAMES}<>"")*1)'
     ws["P2"] = "=P1+1"
     nxt = "$P$2"
     nr = f"INT(({nxt}-1)/{N_MGR})+1"
@@ -386,18 +391,20 @@ def build(path, demo=False):
     style_range(ws, f"A4:{last_col}4", font=F_HDR, fill=FILL_HDR, align=CENTER)
     style_range(ws, f"A5:{last_col}5", font=Font(name=FONT, size=8, italic=True, color="595959"),
                 fill=FILL_SEC, align=CENTER)
+    # Every cell's formula is position-based (same text in every round), so the grid can be built
+    # from round 1 and copied down, e.g. in Google Sheets.
+    rd_f = f"(INT((ROW()-{DG_FIRST_ROW})/2)+1)"
     for rd, nrow in enumerate(name_rows, start=1):
         irow = nrow + 1
-        ws[f"A{nrow}"] = rd
-        ws[f"A{irow}"] = "→" if rd % 2 == 1 else "←"
+        ws[f"A{nrow}"] = f"={rd_f}"
+        ws[f"A{irow}"] = f'=IF(MOD({rd_f},2)=1,"→","←")'
         for c in range(1, N_MGR + 1):
             L = col(1 + c)
-            pir = c if rd % 2 == 1 else N_MGR + 1 - c
-            label = f"{rd}.{pir:02d}"
+            label = f'{rd_f}&"."&TEXT(IF(MOD({rd_f},2)=1,COLUMN()-1,{N_MGR + 1}-(COLUMN()-1)),"00")'
             nm = f"{L}{nrow}"
-            ws[f"{L}{irow}"] = (f'=IF({nm}="","{label}",IF(COUNTIF({DG_RANGE},{nm})>1,"{label}  DUPLICATE",'
-                                f'IFERROR("{label}  "&INDEX(Players!$B$2:$B${P_LAST},MATCH({nm},{PL},0))&" · "'
-                                f'&INDEX(Players!$C$2:$C${P_LAST},MATCH({nm},{PL},0)),"{label}  NOT IN PLAYERS TAB")))')
+            ws[f"{L}{irow}"] = (f'=IF({nm}="",{label},IF(COUNTIF({DG_NAMES},{nm})>1,{label}&"  DUPLICATE",'
+                                f'IFERROR({label}&"  "&INDEX(Players!$B$2:$B${P_LAST},MATCH({nm},{PL},0))&" · "'
+                                f'&INDEX(Players!$C$2:$C${P_LAST},MATCH({nm},{PL},0)),{label}&"  NOT IN PLAYERS TAB")))')
         style_range(ws, f"B{nrow}:{last_col}{nrow}", font=Font(name=FONT, size=10, bold=True),
                     align=Alignment(horizontal="center", vertical="bottom", wrap_text=True),
                     border=False)
@@ -436,6 +443,14 @@ def build(path, demo=False):
     ws.conditional_formatting.add(grid, FormulaRule(
         formula=[f'AND({pick_expr}=$P$2,IF({is_name},{tl},B{DG_FIRST_ROW - 1})="")'],
         fill=PatternFill("solid", fgColor="FFE699"), stopIfTrue=True))
+    # names-only helper block (hidden)
+    ws.cell(row=DG_NAMES_FIRST - 1, column=1, value="Picks (helper, don't edit)")
+    for rd, nrow in enumerate(name_rows):
+        for c in range(1, N_MGR + 1):
+            L = col(1 + c)
+            ws[f"{L}{DG_NAMES_FIRST + rd}"] = f'={L}{nrow}&""'
+    for r_ in range(DG_NAMES_FIRST - 1, DG_NAMES_FIRST + DRAFT_ROUNDS):
+        ws.row_dimensions[r_].hidden = True
     widths(ws, {"A": 6, **{col(1 + c): 17 for c in range(1, N_MGR + 1)}})
     ws.column_dimensions["P"].hidden = True
     ws.freeze_panes = "B6"
